@@ -2,10 +2,12 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import { ObjectId } from 'mongodb';
 import mime from 'mime-types';
+import Queue from 'bull';
 import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
 
 const FOLDER_PATH = process.env.FOLDER_PATH || '/tmp/files_manager';
+const fileQueue = new Queue('fileQueue', 'redis://127.0.0.1:6379');
 
 class FilesController {
   static async postUpload(req, res) {
@@ -76,6 +78,10 @@ class FilesController {
 
     fileData.localPath = localPath;
     const result = await dbClient.db.collection('files').insertOne(fileData);
+
+    if (type === 'image') {
+      await fileQueue.add({ userId: userId.toString(), fileId: result.insertedId.toString() });
+    }
 
     return res.status(201).json({
       id: result.insertedId,
@@ -170,7 +176,7 @@ class FilesController {
     const file = await dbClient.db.collection('files').findOneAndUpdate(
       { _id: ObjectId(fileId), userId: ObjectId(userId) },
       { $set: { isPublic: true } },
-      { returnDocument: 'after' }, // Return the updated document
+      { returnDocument: 'after' },
     );
 
     if (!file.value) {
@@ -200,7 +206,7 @@ class FilesController {
     const file = await dbClient.db.collection('files').findOneAndUpdate(
       { _id: ObjectId(fileId), userId: ObjectId(userId) },
       { $set: { isPublic: false } },
-      { returnDocument: 'after' }, // Return the updated document
+      { returnDocument: 'after' },
     );
 
     if (!file.value) {
@@ -245,15 +251,21 @@ class FilesController {
       return res.status(400).json({ error: "A folder doesn't have content" });
     }
 
-    if (!localPath || !fs.existsSync(localPath)) {
+    const size = req.query.size || null;
+    let filePath = localPath;
+    if (size) {
+      filePath = `${localPath}_${size}`;
+    }
+
+    if (!filePath || !fs.existsSync(filePath)) {
       return res.status(404).json({ error: 'Not found' });
     }
 
     const mimeType = mime.lookup(file.name);
     res.setHeader('Content-Type', mimeType);
-    const fileStream = fs.createReadStream(localPath);
+    const fileStream = fs.createReadStream(filePath);
     fileStream.pipe(res);
-    return res;
+    return res.status(200);
   }
 }
 
